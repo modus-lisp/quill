@@ -186,5 +186,28 @@
     (is "input: the source ending is end of input" (subseq (edited (bytes "ab") :width 40) 0 2)
         '("" :eof)))
 
+  ;; ---- START-LINE / FEED-LINE: keys pushed in as events ----
+  (let* ((out (make-string-output-stream)) (h (make-history))
+         (s (start-line :prompt "> " :history h :output out :width 40)))
+    (is "feed: prompt drawn at start" (and (search "> " (get-output-stream-string out)) t) t)
+    (is "feed: a key, the line goes on" (feed-line s (bytes "(+ 1 2")) nil)
+    (is "feed: an arrow key whole, still going" (feed-line s (bytes :esc "[D" :esc "[C")) nil)
+    (is "feed: Enter finishes" (multiple-value-list (feed-line s (bytes ")" 13))) '("(+ 1 2)" :ok))
+    (is "feed: the accepted line is in history" (coerce (history-entries h) 'list) '("(+ 1 2)"))
+    (let ((s2 (start-line :prompt "> " :history h :output out :width 40)))
+      (is "feed: Up recalls it" (multiple-value-list (feed-line s2 (bytes :esc "[A" 13)))
+          '("(+ 1 2)" :ok)))
+    (let ((s3 (start-line :output out :width 40)))
+      (is "feed: C-c" (multiple-value-list (feed-line s3 (bytes "abc" 3))) '("" :interrupt)))
+    (let ((s4 (start-line :output out :width 40)))
+      (is "feed: C-d on empty" (multiple-value-list (feed-line s4 (bytes 4))) '("" :eof))))
+  (let ((a (make-string-output-stream)) (b (make-string-output-stream)))
+    (read-line-edited :input (quill::byte-source (bytes "ab" 127 "c" 13)) :output a :width 30 :prompt "$ ")
+    (let ((s (start-line :output b :width 30 :prompt "$ ")))
+      (feed-line s (bytes "a")) (feed-line s (bytes "b")) (feed-line s (bytes 127))
+      (feed-line s (bytes "c")) (feed-line s (bytes 13)))
+    (is "feed: draws what read-line-edited draws, key by key"
+        (get-output-stream-string b) (get-output-stream-string a)))
+
   (format t "~&quill: ~d passed, ~d failed~%" *pass* *fail*)
   (zerop *fail*))

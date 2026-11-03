@@ -5,6 +5,8 @@
   (:export
    ;; the one call most programs need
    #:read-line-edited
+   ;; ... or driven by a program that is handed its keys as events
+   #:start-line #:feed-line #:line-width
    ;; history
    #:history #:make-history #:history-add #:history-entries #:load-history
    ;; extending

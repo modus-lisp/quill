@@ -306,27 +306,74 @@
                           :keymap keymap :match-parens match-parens :output output
                           :next (or input #'read-byte-timeout) :local (null input))))
     (when (session-local s) (raw-on))
-    (%out s (format nil "~c[?2004h" #\Escape))            ; bracketed paste on
     (unwind-protect
          (progn
-           (setf (session-width s) (or width (terminal-columns s)))
-           (redisplay s)
+           (%begin s (or width (terminal-columns s)))
            (loop until (session-done s)
                  do (let ((k (%next-key s)))
                       (if (null k)
                           (setf (session-done s) t (session-status s) :eof)
                           (dispatch s k)))
                     (unless (session-done s) (redisplay s)))
-           ;; leave the cursor below the finished input, not in the middle of it
-           (let ((ed (session-buffer s)))
-             (setf (session-match-parens s) nil)
-             (redisplay s :point (length (editor-text ed)))
-             (when (eq (session-status s) :interrupt) (%out s "^C"))
-             (%out s (format nil "~c~c" #\Return #\Linefeed))))
-      (%out s (format nil "~c[?2004l" #\Escape))
+           (%finish s))
+      (unless (session-done s) (%out s (format nil "~c[?2004l" #\Escape)))
       (when (session-local s) (raw-off)))
-    (let ((text (editor-text (session-buffer s))))
-      (case (session-status s)
-        (:ok (when history (history-add history text)) (values text :ok))
-        (:interrupt (values "" :interrupt))
-        (t (values "" :eof))))))
+    (%result s)))
+
+(defun %begin (s width)
+  (%out s (format nil "~c[?2004h" #\Escape))            ; bracketed paste on
+  (setf (session-width s) width)
+  (redisplay s))
+
+(defun %finish (s)
+  "Leave the cursor below the finished input, not in the middle of it; paste mode off."
+  (let ((ed (session-buffer s)))
+    (setf (session-match-parens s) nil)
+    (redisplay s :point (length (editor-text ed)))
+    (when (eq (session-status s) :interrupt) (%out s "^C"))
+    (%out s (format nil "~c~c~c[?2004l" #\Return #\Linefeed #\Escape))))
+
+(defun %result (s)
+  (let ((text (editor-text (session-buffer s))) (history (session-history s)))
+    (case (session-status s)
+      (:ok (when history (history-add history text)) (values text :ok))
+      (:interrupt (values "" :interrupt))
+      (t (values "" :eof)))))
+
+;;; ---- driven from outside ----------------------------------------------------------------
+;;; READ-LINE-EDITED pulls keys and blocks until a line is done.  A program that is handed its
+;;; keys as events -- a window's key handler, which must return -- pushes them instead: START-LINE
+;;; draws the prompt, FEED-LINE takes the bytes of what was typed and edits, and says when the
+;;; line is finished.
+
+(defun start-line (&key (prompt "") continuation history completer (keymap *default-keymap*)
+                        (initial "") (match-parens t) (output *standard-output*) (width 80))
+  "Begin reading a line on a terminal that is written to OUTPUT and whose keys arrive by
+   FEED-LINE; draws the prompt.  Returns the session.  Arguments as for READ-LINE-EDITED."
+  (let ((s (%make-session :buffer (make-editor :text initial) :history history
+                          :prompt prompt :continuation continuation :completer completer
+                          :keymap keymap :match-parens match-parens :output output
+                          :next (lambda (&optional timeout) (declare (ignore timeout)) nil)
+                          :local nil)))
+    (%begin s width)
+    s))
+
+(defun feed-line (s octets)
+  "Edit with OCTETS, the bytes of what was typed (whole key sequences: an escape sequence
+   split between two calls reads as ESC and then text).  NIL while the line goes on;
+   (values TEXT STATUS) as READ-LINE-EDITED's once it is finished, after which S is spent."
+  (when (session-done s) (return-from feed-line (%result s)))
+  (setf (session-next s) (byte-source octets))
+  (loop
+    (let ((k (%next-key s)))
+      (when (null k) (return))
+      (dispatch s k)
+      (when (session-done s) (return))))
+  (if (session-done s)
+      (progn (%finish s) (%result s))
+      (progn (redisplay s) nil)))
+
+(defun line-width (s width)
+  "The terminal is now WIDTH columns: redraw the line for it."
+  (setf (session-width s) width)
+  (redisplay s))
