@@ -20,6 +20,18 @@ A terminal line editor in pure Common Lisp. No FFI, no dependencies.
 Keys are bound with `(quill:bind keymap key command)` on a copy of `*default-keymap*`;
 a command is any function of the session.
 
+## A terminal that isn't stdin
+
+`:input` reads from any byte source instead: an SSH channel, a window drawing a terminal
+in the same image.  It is a function `(&optional timeout)` returning the next byte, or NIL
+when `timeout` seconds pass first or the input has ended.  Nothing touches this process's
+terminal then (no raw mode; Ctrl-Z rings the bell), and `:width` may give the width rather
+than asking the terminal.
+
+```lisp
+(quill:read-line-edited :prompt "> " :input #'next-byte :output channel-stream :width 80)
+```
+
 ## Porting
 
 Everything is portable CL except `src/port.lisp`: raw mode, a timed one-byte read, and

@@ -16,6 +16,7 @@
   (match-parens t)
   (output *standard-output*)
   (next #'read-byte-timeout)      ; the byte source
+  (local t)                       ; on this process's own terminal (raw mode, Ctrl-Z apply)
   (pending '())                   ; key events read ahead while asking the terminal its size
   (width 80)
   (cursor-row 0)                  ; where RENDER left the cursor, from the drawing's first row
@@ -113,7 +114,10 @@
   (setf (session-cursor-row s) 0))
 
 (defun suspend (s)
-  "Ctrl-Z: give the terminal back, stop, and pick up again when continued."
+  "Ctrl-Z: give the terminal back, stop, and pick up again when continued.  On a terminal
+   at the end of an :INPUT source there is no process to stop: a bell."
+  (unless (session-local s)
+    (return-from suspend (%out s (string (code-char 7)))))
   (let ((ed (session-buffer s)))
     (redisplay s :point (length (editor-text ed)))
     (%out s (format nil "~c~c" #\Return #\Linefeed))
@@ -275,7 +279,7 @@
 
 (defun read-line-edited (&key (prompt "") continuation history completer
                               (keymap *default-keymap*) (initial "") (match-parens t)
-                              (output *standard-output*))
+                              (output *standard-output*) input width)
   "Read one line, with editing, from the terminal.  Returns (values text status), STATUS
    being :OK, :EOF (C-d on an empty line) or :INTERRUPT (C-c).
 
@@ -286,19 +290,26 @@
    replacing TEXT from START to point.
 
    When stdin is not a terminal there is nothing to edit: PROMPT is written and a plain line
-   read, so the same call serves a piped session."
-  (unless (tty-p 0)
+   read, so the same call serves a piped session.
+
+   INPUT is a terminal at the end of something other than this process's stdin -- an SSH
+   channel, a window on the same machine: a function (&optional timeout) -> the next byte,
+   or NIL when TIMEOUT seconds pass first or the input has ended (TIMEOUT NIL waits).  The
+   terminal is taken to be in raw mode already, and nothing here touches this process's.
+   WIDTH, when given, is the terminal's width; otherwise the terminal is asked."
+  (unless (or input (tty-p 0))
     (write-string prompt output) (force-output output)
     (let ((line (read-line *standard-input* nil)))
       (return-from read-line-edited (if line (values line :ok) (values "" :eof)))))
   (let ((s (%make-session :buffer (make-editor :text initial) :history history
                           :prompt prompt :continuation continuation :completer completer
-                          :keymap keymap :match-parens match-parens :output output)))
-    (raw-on)
+                          :keymap keymap :match-parens match-parens :output output
+                          :next (or input #'read-byte-timeout) :local (null input))))
+    (when (session-local s) (raw-on))
     (%out s (format nil "~c[?2004h" #\Escape))            ; bracketed paste on
     (unwind-protect
          (progn
-           (setf (session-width s) (terminal-columns s))
+           (setf (session-width s) (or width (terminal-columns s)))
            (redisplay s)
            (loop until (session-done s)
                  do (let ((k (%next-key s)))
@@ -313,7 +324,7 @@
              (when (eq (session-status s) :interrupt) (%out s "^C"))
              (%out s (format nil "~c~c" #\Return #\Linefeed))))
       (%out s (format nil "~c[?2004l" #\Escape))
-      (raw-off))
+      (when (session-local s) (raw-off)))
     (let ((text (editor-text (session-buffer s))))
       (case (session-status s)
         (:ok (when history (history-add history text)) (values text :ok))

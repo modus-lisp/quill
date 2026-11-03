@@ -164,5 +164,27 @@
   (is "inner paren match" (quill::matching-open-paren "(a (b) c)" 6) 3)
   (is "no paren" (quill::matching-open-paren "abc" 3) nil)
 
+  ;; ---- READ-LINE-EDITED itself, on an :INPUT source (an SSH channel, a window) ----
+  (flet ((edited (octets &rest args)
+           (let ((out (make-string-output-stream)))
+             (multiple-value-bind (text status)
+                 (apply #'read-line-edited :input (quill::byte-source octets) :output out args)
+               (list text status (get-output-stream-string out))))))
+    (let ((r (edited (bytes "(+ 1" 10 " 2)" 127 "3)" 13) :prompt "> " :width 40)))
+      (is "input: edited and accepted" (subseq r 0 2) (list (format nil "(+ 1~% 23)") :ok))
+      (is "input: prompt drawn, paste mode on and off"
+          (list (and (search "> " (third r)) t)
+                (and (search (format nil "~c[?2004h" #\Escape) (third r)) t)
+                (and (search (format nil "~c[?2004l" #\Escape) (third r)) t))
+          '(t t t)))
+    (is "input: width asked of the terminal, keys typed before the answer kept"
+        (subseq (edited (bytes "ab" :esc "[1;33R" "c" 13)) 0 2) '("abc" :ok))
+    (is "input: C-d on an empty line" (subseq (edited (bytes 4) :width 40) 0 2) '("" :eof))
+    (is "input: C-c" (subseq (edited (bytes "x" 3) :width 40) 0 2) '("" :interrupt))
+    (is "input: C-z rings rather than stopping this process"
+        (subseq (edited (bytes "a" 26 "b" 13) :width 40) 0 2) '("ab" :ok))
+    (is "input: the source ending is end of input" (subseq (edited (bytes "ab") :width 40) 0 2)
+        '("" :eof)))
+
   (format t "~&quill: ~d passed, ~d failed~%" *pass* *fail*)
   (zerop *fail*))
